@@ -136,9 +136,10 @@ int dm_easy_mesh_t::commit_config(dm_easy_mesh_t& dm, em_commit_target_t target)
 							found++;
 							break;
 						} else if ((dm.m_op_class[i].m_op_class_info.id.type == m_op_class[j].m_op_class_info.id.type) && 
-							(dm.m_op_class[j].m_op_class_info.id.type == 1)) {
+							(dm.m_op_class[j].m_op_class_info.id.type == 1) &&
+							(memcmp(dm.m_op_class[i].m_op_class_info.id.ruid, m_op_class[j].m_op_class_info.id.ruid, sizeof(mac_address_t)) == 0)) {
 							m_op_class[j].m_op_class_info = dm.m_op_class[i].m_op_class_info;
-							printf("%s:%d op class=%d  already exist so updated \n", 
+							printf("%s:%d op class=%d  already exist so updated  ID = 1\n", 
 								__func__, __LINE__,dm.m_op_class[i].m_op_class_info.op_class);
                            	found++;
                            	break;

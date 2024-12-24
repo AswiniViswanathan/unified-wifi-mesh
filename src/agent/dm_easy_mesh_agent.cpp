@@ -281,8 +281,10 @@ int dm_easy_mesh_agent_t::analyze_onewifi_private_cb(em_bus_event_t *evt, em_cmd
     webconfig_subdoc_type_t type;
     int num = 0;
     unsigned int i = 0, j = 0, index = 0;
-    dm_easy_mesh_agent_t  dm, radio_dm;
+    dm_easy_mesh_agent_t  dm;
     em_cmd_t *tmp;
+	mac_addr_str_t mac_str;
+	em_commit_target_t cm_config;
     webconfig_proto_easymesh_init(&ext, &dm, NULL, get_num_radios, set_num_radios,
             get_num_op_class, set_num_op_class, get_num_bss, set_num_bss,
             get_device_info, get_network_info, get_radio_info, get_ieee_1905_security_info, get_bss_info, 
@@ -300,24 +302,17 @@ int dm_easy_mesh_agent_t::analyze_onewifi_private_cb(em_bus_event_t *evt, em_cmd
         printf("%s:%d Private subdoc decode fail\n",__func__, __LINE__);
     }
 
-    for (i = 0; i < m_num_bss; i++) {
-        for (j = 0; j < dm.m_num_bss; j++) {
-			if ((memcmp(get_bss(i)->get_bss_info()->ruid.mac, dm.get_bss(j)->get_bss_info()->ruid.mac, sizeof(mac_address_t)) == 0) &&
-        		(memcmp(get_bss(i)->get_bss_info()->bssid.mac, dm.get_bss(j)->get_bss_info()->bssid.mac, sizeof(mac_address_t)) == 0)) {
-				commit_bss_config(dm, j);
-				memcpy(radio_dm.get_radio(index)->get_radio_info()->id.mac, dm.get_bss(j)->get_bss_info()->ruid.mac, sizeof(mac_address_t));
-				radio_dm.m_num_radios = 1;
-				pcmd[num] = new em_cmd_ow_cb_t(evt->params, radio_dm);
-				tmp = pcmd[num];
-				num++;
-
-				while ((pcmd[num] = tmp->clone_for_next()) != NULL) {
-					tmp = pcmd[num];
-					num++;
-				}
-            }
-        }
-    }
+	dm_easy_mesh_t::macbytes_to_string(dm.get_bss(index)->get_bss_info()->ruid.mac, mac_str);
+	snprintf((char *)cm_config.params,sizeof(cm_config.params),(char*)"%s",mac_str);
+	cm_config.type = em_commit_target_bss;
+	commit_config(dm, cm_config);
+	pcmd[num] = new em_cmd_ow_cb_t(evt->params, dm);
+	tmp = pcmd[num];
+	num++;
+	while ((pcmd[num] = tmp->clone_for_next()) != NULL) {
+			tmp = pcmd[num];
+			num++;
+	}
 
     return num;
 }
@@ -330,7 +325,7 @@ int dm_easy_mesh_agent_t::analyze_onewifi_radio_cb(em_bus_event_t *evt, em_cmd_t
     int num = 0;
     mac_addr_str_t  mac_str;
     unsigned int i = 0, j = 0, index = 0;
-    dm_easy_mesh_agent_t  dm, radio_dm;
+    dm_easy_mesh_agent_t  dm;
     em_cmd_t *tmp;
     em_commit_target_t cm_config;
 
@@ -351,27 +346,20 @@ int dm_easy_mesh_agent_t::analyze_onewifi_radio_cb(em_bus_event_t *evt, em_cmd_t
     } else {
         printf("%s:%d Radio subdoc decode fail\n",__func__, __LINE__);
     }
-	for (i = 0; i < m_num_radios; i++) {
-		for (j = 0; j < dm.m_num_radios; j++) {
-			if (memcmp(get_radio(i)->get_radio_info()->id.mac, dm.get_radio(j)->get_radio_info()->id.mac, sizeof(mac_address_t)) == 0) {
-				dm_easy_mesh_t::macbytes_to_string(get_radio(i)->get_radio_info()->id.mac, mac_str);
-				cm_config.type = em_commit_target_radio;
-				snprintf((char *)cm_config.params,sizeof(cm_config.params),(char*)"%s",mac_str);
-				commit_config(dm, cm_config);
-				memcpy(radio_dm.get_radio(index)->get_radio_info()->id.mac, dm.get_radio(j)->get_radio_info()->id.mac, sizeof(mac_address_t));
-				radio_dm.m_num_radios = 1;
-				pcmd[num] = new em_cmd_op_channel_report_t(evt->params, radio_dm);
-    			tmp = pcmd[num];
-    			num++;
 
-    			while ((pcmd[num] = tmp->clone_for_next()) != NULL) {
-        			tmp = pcmd[num];
-        			num++;
-    			}
-            }
-        }
-    }
-    
+	dm_easy_mesh_t::macbytes_to_string(dm.get_radio(index)->get_radio_info()->id.mac, mac_str);
+	cm_config.type = em_commit_target_radio;
+	snprintf((char *)cm_config.params,sizeof(cm_config.params),(char*)"%s",mac_str);
+	commit_config(dm, cm_config);
+	pcmd[num] = new em_cmd_op_channel_report_t(evt->params, dm);
+	tmp = pcmd[num];
+	num++;
+
+	while ((pcmd[num] = tmp->clone_for_next()) != NULL) {
+	tmp = pcmd[num];
+	num++;
+	}
+
 	return num;
 }
         
@@ -501,6 +489,7 @@ int dm_easy_mesh_agent_t::analyze_channel_sel_req(em_bus_event_t *evt, wifi_bus_
     memcpy(radio_info->srg_bss_color_bitmap, spatial_reuse_req->srg_bss_color_bitmap, sizeof(radio_info->srg_bss_color_bitmap));
     memcpy(radio_info->srg_partial_bssid_bitmap, spatial_reuse_req->srg_partial_bssid_bitmap, sizeof(radio_info->srg_partial_bssid_bitmap));   
 
+/*
     bool found_radio = false;
     bool found_bss = false;
     for (i = 0; i < eht_ops->radios_num; i++) {
@@ -531,7 +520,7 @@ int dm_easy_mesh_agent_t::analyze_channel_sel_req(em_bus_event_t *evt, wifi_bus_
             memcpy(&dm.m_bss[j].get_bss_info()->eht_ops, &eht_ops->radios[i].bss[k], sizeof(em_eht_operations_bss_t));
         }
     }
-
+*/
     webconfig_proto_easymesh_init(&dev_data, &dm, NULL, get_num_radios, set_num_radios,
 			get_num_op_class, set_num_op_class, get_num_bss, set_num_bss,
 			get_device_info, get_network_info, get_radio_info, get_ieee_1905_security_info, get_bss_info, get_op_class_info, 

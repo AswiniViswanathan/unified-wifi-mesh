@@ -1,0 +1,100 @@
+package main
+
+/*
+#cgo CFLAGS: -I../../inc -I../../../OneWifi/include -I../../../OneWifi/source/utils -I../../../halinterface/include
+#cgo LDFLAGS: -L../../install/lib -lemcli -lcjson -lreadline
+#include <readline/readline.h>
+#include <readline/history.h>
+#include "em_cli_apis.h"
+
+extern int editor_func(em_network_node_t *node);
+
+static int register_editor_cb() {
+	return init(editor_func);	
+}
+
+*/
+import "C"
+
+import (
+	"unsafe"
+	"fmt"
+)
+
+//export editor_func
+func editor_func(*C.em_network_node_t) C.int {
+	fmt.Println("Inside Go Callnack")
+	return 0
+}
+
+type Node struct {
+    Value    string
+    Desc    string
+    Children []Node
+}
+
+func updateNodes(netNode *C.em_network_node_t, parentNode *C.em_network_node_t, treeNode *Node) {
+    var str *C.char
+
+    treeNode.Value = C.GoString(&netNode.key[0])
+	fmt.Printf("%s\n", treeNode.Value)
+    nodeType := C.get_node_type(netNode)
+
+	if nodeType == C.em_network_node_data_type_array {
+		if int(netNode.num_children) > 0 {
+			childNetNode := C.get_child_node_at_index(netNode, 0);
+			childNodeType := C.get_node_type(childNetNode)
+			if ((childNodeType == C.em_network_node_data_type_string) || (childNodeType == C.em_network_node_data_type_number) ||
+            		(childNodeType == C.em_network_node_data_type_false) || (childNodeType == C.em_network_node_data_type_true)) {
+				str = C.get_formatted_node_array_value(netNode)
+            	treeNode.Desc = C.GoString(str)
+				fmt.Printf("%s\n", treeNode.Desc)
+            	C.free_formatted_node_value(str)
+			} else {
+				treeNode.Children = make([]Node, uint(netNode.num_children))
+        		for i := 0; i < int(netNode.num_children); i++ {
+            		childNetNode := C.get_child_node_at_index(netNode, C.uint(i));
+            		childTreeNode := &treeNode.Children[i]
+            		updateNodes(childNetNode, netNode, childTreeNode)
+        		}
+			}
+		}
+		
+	} else if ((nodeType == C.em_network_node_data_type_string) || (nodeType == C.em_network_node_data_type_number) ||
+            (nodeType == C.em_network_node_data_type_false) || (nodeType == C.em_network_node_data_type_true)) {
+		str = C.get_formatted_node_scalar_value(netNode)
+        treeNode.Desc = C.GoString(str)
+		fmt.Printf("%s\n", treeNode.Desc)
+        C.free_formatted_node_value(str)	
+	} else {
+		treeNode.Children = make([]Node, uint(netNode.num_children))
+        for i := 0; i < int(netNode.num_children); i++ {
+            childNetNode := C.get_child_node_at_index(netNode, C.uint(i));
+            childTreeNode := &treeNode.Children[i]
+            updateNodes(childNetNode, netNode, childTreeNode)
+        }
+	}
+
+}
+
+func main() {
+
+	//var treeNode Node
+
+	C.register_editor_cb()
+	for {
+		prompt := C.CString("<<OneWifiMeshCli>>: ")
+		line := C.readline(prompt)
+		C.free(unsafe.Pointer(prompt))
+
+		netNode := C.exec(line, C.strlen(line))
+	
+		treeNode := make([]Node, 1)	
+   		updateNodes(netNode, nil, &treeNode[0])	
+		//C.print_network_tree(netNode)
+
+		C.free_network_tree(netNode)
+		C.free(unsafe.Pointer(line))
+	}
+	
+}

@@ -8,22 +8,23 @@ package main
 #include <readline/history.h>
 #include "em_cli_apis.h"
 
-extern int editor_func(em_network_node_t *node);
+extern em_network_node_t *editor_func(em_network_node_t *node, void *user_data);
 
-static int register_editor_cb() {
-	return init(editor_func);	
+static int register_editor_cb(void *model) {
+	return init(editor_func, model);	
 }
 */
 import "C"
 
 import (
 	"fmt"
+	"unsafe"
 	"os"
-    "strings"
+	"strings"
     tea "github.com/charmbracelet/bubbletea"
     "github.com/charmbracelet/lipgloss"
-    "github.com/charmbracelet/bubbles/list"
-    "github.com/davecgh/go-spew/spew"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/davecgh/go-spew/spew"
     tree "github.com/savannahostrowski/tree-bubble"
 )
 
@@ -31,51 +32,43 @@ var (
     appStyle = lipgloss.NewStyle().Padding(1, 2)
 
     titleStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("#080563")).
-    Padding(1, 8).
-    Bold(true)
+        Foreground(lipgloss.Color("#080563")).
+        Padding(1, 8).
+        Bold(true)
 
     menuBorderStyle = lipgloss.NewStyle().
-    Background(lipgloss.Color("#C1E5FB")).
-    Width(30)
+        Background(lipgloss.Color("#C1E5FB")).
+        Width(30)
 
     statusBorderStyle = lipgloss.NewStyle().
-    Background(lipgloss.Color("#79B4D7")).
-    Height(48)
+        Background(lipgloss.Color("#79B4D7")).
+        Height(48)
 
     jsonStyle = lipgloss.NewStyle().
-    Border(lipgloss.RoundedBorder()).
-    BorderForeground(lipgloss.Color("#080563")).
-    Background(lipgloss.Color("#FFFFFF")).
-    Foreground(lipgloss.Color("#000000")).
-    Width(95).
-    Padding(0, 10).
-    MarginLeft(10).
-    MarginTop(2)
-
-    listItemStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("#FFFFFF")).
-    Background(lipgloss.Color("#080563")). 
-    Width(25).
-    Align(lipgloss.Center) 
+        Border(lipgloss.RoundedBorder()).
+        BorderForeground(lipgloss.Color("#080563")).
+        Background(lipgloss.Color("#FFFFFF")).
+        Foreground(lipgloss.Color("#000000")).
+        Width(95).
+        Padding(0, 10).
+        MarginLeft(10).
+        MarginTop(2)
 
     buttonStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("#FFFFFF")).
-    Background(lipgloss.Color("#080563")).
-    Padding(0, 1).
-    MarginRight(3).
-    Width(25).
-    Align(lipgloss.Center).
-    MarginBackground(lipgloss.Color("#79B4D7"))
+        Foreground(lipgloss.Color("#FFFFFF")).
+        Background(lipgloss.Color("#080563")).
+        Padding(0, 1).
+        Width(25).
+        Align(lipgloss.Center)
 
     activeButtonStyle = buttonStyle.Copy().
-    Background(lipgloss.Color("39")).
-    Bold(true)
+        Background(lipgloss.Color("39")).
+        Bold(true)
 
     activeNodeStyle = lipgloss.NewStyle().
-    Background(lipgloss.Color("39")).
-    Foreground(lipgloss.Color("black")).
-    Bold(true)
+        Background(lipgloss.Color("39")).
+        Foreground(lipgloss.Color("black")).
+        Bold(true)
 )
 
 type item struct {
@@ -87,18 +80,23 @@ func (i item) Title() string {
     if i.isActive {
         return activeButtonStyle.Render(i.title)
     }
-    return listItemStyle.Render(i.title)
+    return buttonStyle.Render(i.title)
 }
 
 func (i item) Description() string { return "" }
 func (i item) FilterValue() string { return i.title }
 
 var commandDescriptions = map[string]string{
-    "Network SSID List":               "allows you to configure the SSID.",
-    "Network Tree":                    "You have pressed Network Tree option.",
-    "Radios":                          "Radio details.",
-    "Channels":                        "Display channel details.",
-    "Client Devices":                  "Fetches the client information.",
+    "Set SSID":               "set_ssid allows you to configure the SSID.",
+    "Show Devices":           "You have pressed get_device option.",
+    "Remove Device":          "remove_device command is used to remove a device.",
+    "Show Radios":            "get_radio command shows radio details.",
+    "Disable Radio":          "disable radio.",
+    "Show Current Channels":  "get_channel fetches the channel information.",
+    "Set Channel":            "set_channel sets the wireless channel.",
+    "Show Networks":          "show_networks displays the networks.",
+    "Steer Clients":          "steer_sta steers a station to a different AP.",
+    "Disassociate Clients":   "disassoc_sta disassociates a station.",
 }
 
 type model struct {
@@ -111,17 +109,21 @@ type model struct {
     currentNetNode   *C.em_network_node_t
     displayedNetNode   *C.em_network_node_t
     cursor int
-    dump 	*os.File
-    collapsedState    map[string]bool
+	dump 	*os.File
 }
 
 func newModel() model {
     items := []list.Item{
-        item{title: "Network SSID List"},
-        item{title: "Network Tree"},
-        item{title: "Radios"},
-        item{title: "Channels"},
-        item{title: "Client Devices"},
+        item{title: "Set SSID"},
+        item{title: "Show Devices"},
+        item{title: "Remove Device"},
+        item{title: "Show Radios"},
+        item{title: "Disable Radio"},
+        item{title: "Show Current Channels"},
+        item{title: "Set Channel"},
+        item{title: "Show Networks"},
+        item{title: "Steer Clients"},
+        item{title: "Disassociate Clients"},
     }
 
     commandList := list.New(items, list.NewDefaultDelegate(), 0, 0)
@@ -131,15 +133,18 @@ func newModel() model {
     commandList.SetShowPagination(false)
     commandList.SetShowHelp(false)
 
-    dump, _ := os.OpenFile("messages.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-    C.init_lib_dbg(C.CString("messages_lib.log"))
+	dump, _ := os.OpenFile("messages.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	C.init_lib_dbg(C.CString("messages_lib.log"))
 
     return model{
         list:          commandList,
         statusMessage: "",
-        dump: dump,
-        collapsedState: make(map[string]bool),
+		dump: dump,
     }
+}
+
+type UserData struct {
+   	m *model 
 }
 
 func splitIntoLines(content string) []string {
@@ -147,20 +152,24 @@ func splitIntoLines(content string) []string {
 }
 
 func (m model) Init() tea.Cmd {
-    return nil
+	ms := UserData{&m}
+
+	C.register_editor_cb(unsafe.Pointer(&ms))
+	return nil
 }
 
 //export editor_func
-func editor_func(*C.em_network_node_t) C.int {
-    fmt.Println("Inside Go Callnack")
-    return 0
+func editor_func(*C.em_network_node_t, *C.void) *C.em_network_node_t {
+	fmt.Println("Inside Go Callnack")
+	//mainProgram.Send(someMsg{value: "ta da!"})
+	return nil
 }
 
 func updateNodes(netNode *C.em_network_node_t, treeNode *tree.Node) {
     var str *C.char
 
-    //treeNode.Value = C.GoString(&netNode.key[0]) + "." + fmt.Sprintf("%d", uint(netNode.display_info.node_ctr)) + "." + fmt.Sprintf("%d", uint(netNode.display_info.orig_node_ctr))
-    treeNode.Value = C.GoString(&netNode.key[0])
+	//treeNode.Value = C.GoString(&netNode.key[0]) + "." + fmt.Sprintf("%d", uint(netNode.display_info.node_ctr)) + "." + fmt.Sprintf("%d", uint(netNode.display_info.orig_node_ctr))
+	treeNode.Value = C.GoString(&netNode.key[0])
     nodeType := C.get_node_type(netNode)
 
     if nodeType == C.em_network_node_data_type_array {
@@ -168,7 +177,7 @@ func updateNodes(netNode *C.em_network_node_t, treeNode *tree.Node) {
             childNetNode := C.get_child_node_at_index(netNode, 0);
             childNodeType := C.get_node_type(childNetNode)
             if ((childNodeType == C.em_network_node_data_type_string) || (childNodeType == C.em_network_node_data_type_number) ||
-            (childNodeType == C.em_network_node_data_type_false) || (childNodeType == C.em_network_node_data_type_true)) {
+                    (childNodeType == C.em_network_node_data_type_false) || (childNodeType == C.em_network_node_data_type_true)) {
                 str = C.get_formatted_node_array_value(netNode)
                 treeNode.Desc = C.GoString(str)
                 C.free_formatted_node_value(str)
@@ -183,7 +192,7 @@ func updateNodes(netNode *C.em_network_node_t, treeNode *tree.Node) {
         }
 
     } else if ((nodeType == C.em_network_node_data_type_string) || (nodeType == C.em_network_node_data_type_number) ||
-    (nodeType == C.em_network_node_data_type_false) || (nodeType == C.em_network_node_data_type_true)) {
+            (nodeType == C.em_network_node_data_type_false) || (nodeType == C.em_network_node_data_type_true)) {
         str = C.get_formatted_node_scalar_value(netNode)
         treeNode.Desc = C.GoString(str)
         C.free_formatted_node_value(str)
@@ -202,18 +211,17 @@ func formatTree(nodes []tree.Node, m *model, cursor *int, currentIdx *int) strin
 
     var traverse func(node tree.Node, indent string)
     traverse = func(node tree.Node, indent string) {
-
-        uniqueID := fmt.Sprintf("%s_%d", node.Value, *currentIdx)
-        isCollapsed := m.collapsedState[uniqueID]
-
-        prefix := "[+]"
-        if !isCollapsed {
-            prefix = "[-]"
+        // Create a prefix for child nodes
+        prefix := "[-] "
+        if len(node.Children) == 0 {
+            prefix = "└── "
         }
 
+        // Generate the current index and increment for each node
         idx := *currentIdx
         *currentIdx++
 
+        // Style node based on selection state
         var line string
         if *cursor == idx {
             line = fmt.Sprintf("%s%s%s  %s", indent, prefix, activeNodeStyle.Render(node.Value), activeNodeStyle.Render(node.Desc))
@@ -223,27 +231,26 @@ func formatTree(nodes []tree.Node, m *model, cursor *int, currentIdx *int) strin
 
         builder.WriteString(line + "\n")
 
-        if !isCollapsed {
-            for _, child := range node.Children {
-                traverse(child, indent+"    ")
-            }
+        // Traverse the children with increased indentation
+        for _, child := range node.Children {
+            traverse(child, indent+"    ")
         }
     }
 
+    // Start traversal
+    //traverse(node, "")
     for _, node := range nodes {
         traverse(node, "")
     }
     return builder.String()
 }
 
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     var cmds []tea.Cmd
-    const linesToDisplay = 38
 
-    if m.dump != nil {
-        spew.Fdump(m.dump, msg)
-    }
+	if m.dump != nil {
+		spew.Fdump(m.dump, msg)
+	}
 
     switch msg := msg.(type) {
     case tea.WindowSizeMsg:
@@ -254,7 +261,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     case tea.KeyMsg:
         switch msg.String() {
         case "tab":
-            m.activeButton = (m.activeButton + 1) % 3
+            m.activeButton = (m.activeButton + 1) % 2
 
         case "enter":
             if m.activeButton == 0 && len(m.scrollContent) > 0 {
@@ -262,15 +269,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             } else if m.activeButton == 1 {
                 m.statusMessage = "Cancel Button Pressed"
             } else if selectedItem, ok := m.list.SelectedItem().(item); ok {
-                if selectedItem.title == "Network SSID List" {
+                if selectedItem.title == "Set SSID" {
                     m.currentNetNode = C.get_network_tree_by_file(C.CString("NetworkSSID.json"))
                     if m.currentNetNode == nil {
                         m.statusMessage = "Error: Failed to retrieve network tree."
                         m.scrollContent = nil
                     } else {
-                        treeNode := make([]tree.Node, 1)
+						treeNode := make([]tree.Node, 1)
                         m.currentTreeNode = &treeNode[0]
-                        m.displayedNetNode = C.clone_network_tree(m.currentNetNode, nil, 0xffff, false)
+						m.displayedNetNode = C.clone_network_tree(m.currentNetNode, nil, 0xffff, false)
                         updateNodes(m.displayedNetNode, m.currentTreeNode)
 
                         currentIdx := 0
@@ -290,73 +297,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             }
 
         case "w":
-            if m.cursor > 0 {
-                m.cursor--
-                if m.cursor < m.scrollIndex {
-                    m.scrollIndex--
-                }
-                updateScrollContent(&m)
+            if m.scrollIndex > 0 {
+                m.scrollIndex--
             }
 
         case "s":
-            if m.cursor < len(m.scrollContent)-1 {
-                m.cursor++
-                if m.cursor >= m.scrollIndex+linesToDisplay {
-                    m.scrollIndex++
-                }
-                updateScrollContent(&m)
+            if m.scrollIndex < len(m.scrollContent)-1 {
+                m.scrollIndex++
             }
 
-        case "c":
-            netNode := C.get_node_from_node_ctr(m.displayedNetNode, C.uint(m.cursor))
-            if uint(C.can_collapse_node(netNode)) == 1 {
-                uniqueID := fmt.Sprintf("%s_%d", C.GoString(&netNode.key[0]), m.cursor) 
-                m.collapsedState[uniqueID] = true 
+		case "c":
+			netNode := C.get_node_from_node_ctr(m.displayedNetNode, C.uint(m.scrollIndex))
+			if uint(C.can_collapse_node(netNode)) == 1 {
+				tmp := m.displayedNetNode
+				m.displayedNetNode = C.clone_network_tree(m.currentNetNode, m.displayedNetNode, C.uint(m.scrollIndex), true)
+				defer C.free_network_tree(tmp);
+				str := C.get_network_tree_string(m.displayedNetNode)
+				spew.Fdump(m.dump, "Collapse", m.scrollIndex)
+				C.dump_lib_dbg(str)
+						
+				treeNode := make([]tree.Node, 1)
+           		m.currentTreeNode = &treeNode[0]
+          		updateNodes(m.displayedNetNode, m.currentTreeNode)
 
-                tmp := m.displayedNetNode
-                m.displayedNetNode = C.clone_network_tree(m.currentNetNode, m.displayedNetNode, C.uint(m.cursor), true)
-                defer C.free_network_tree(tmp);
-                str := C.get_network_tree_string(m.displayedNetNode)
-                spew.Fdump(m.dump, "Collapse", m.cursor)
-                C.dump_lib_dbg(str)
+           		currentIdx := 0
+           		cursor := 0
+           		content := formatTree(treeNode, &m, &cursor, &currentIdx)
+           		m.scrollContent = splitIntoLines(content)
+           		m.scrollIndex = 0
+			} 
 
-                treeNode := make([]tree.Node, 1)
-                m.currentTreeNode = &treeNode[0]
-                updateNodes(m.displayedNetNode, m.currentTreeNode)
+		case "e":
+			netNode := C.get_node_from_node_ctr(m.displayedNetNode, C.uint(m.scrollIndex))
+			if (uint(C.can_expand_node(netNode))) == 1 {
+				tmp := m.displayedNetNode
+				m.displayedNetNode = C.clone_network_tree(m.currentNetNode, m.displayedNetNode, C.uint(m.scrollIndex), false)
+				defer C.free_network_tree(tmp);
+				str := C.get_network_tree_string(m.displayedNetNode)
+				spew.Fdump(m.dump, "Expand", m.scrollIndex)
+				C.dump_lib_dbg(str)
+						
+				treeNode := make([]tree.Node, 1)
+           		m.currentTreeNode = &treeNode[0]
+          		updateNodes(m.displayedNetNode, m.currentTreeNode)
 
-                currentIdx := 0
-                cursor := 0
-                content := formatTree(treeNode, &m, &cursor, &currentIdx)
-                m.scrollContent = splitIntoLines(content)
-                m.scrollIndex = 0
-            }
-
-        case "e":
-            netNode := C.get_node_from_node_ctr(m.displayedNetNode, C.uint(m.cursor))
-            if (uint(C.can_expand_node(netNode))) == 1 {
-                uniqueID := fmt.Sprintf("%s_%d", C.GoString(&netNode.key[0]), m.cursor)  
-                m.collapsedState[uniqueID] = false
-
-                tmp := m.displayedNetNode
-                m.displayedNetNode = C.clone_network_tree(m.currentNetNode, m.displayedNetNode, C.uint(m.cursor), false)
-                defer C.free_network_tree(tmp);
-
-                str := C.get_network_tree_string(m.displayedNetNode)
-                spew.Fdump(m.dump, "Expand", m.cursor)
-                C.dump_lib_dbg(str)
-
-                treeNode := make([]tree.Node, 1)
-                m.currentTreeNode = &treeNode[0]
-                updateNodes(m.displayedNetNode, m.currentTreeNode)
-
-                currentIdx := 0
-                cursor := 0
-                content := formatTree(treeNode, &m, &cursor, &currentIdx)
-                m.scrollContent = splitIntoLines(content)
-                m.scrollIndex = 0
-            }
-
-
+           		currentIdx := 0
+           		cursor := 0
+           		content := formatTree(treeNode, &m, &cursor, &currentIdx)
+           		m.scrollContent = splitIntoLines(content)
+           		m.scrollIndex = 0
+			}
+				
         default:
             newListModel, cmd := m.list.Update(msg)
             m.list = newListModel
@@ -372,22 +363,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     return m, tea.Batch(cmds...)
 }
 
-func updateScrollContent(m *model) {
-    if m.currentTreeNode != nil {
-        currentIdx := 0
-        content := formatTree([]tree.Node{*m.currentTreeNode}, m, &m.cursor, &currentIdx)
-        m.scrollContent = splitIntoLines(content)
-    }
-}
-
 func (m model) View() string {
     menuView := m.list.View()
 
     instructions := lipgloss.NewStyle().
-    Foreground(lipgloss.Color("#000000")).
-    Background(lipgloss.Color("#C1E5FB")).
-    Padding(1, 2).
-    Render("↑/k up ● ↓/j down ● q quit")
+        Foreground(lipgloss.Color("#000000")).
+        Background(lipgloss.Color("#C1E5FB")).
+        Padding(1, 2).
+        Render("↑/k up ● ↓/j down ● q quit")
 
     menuViewWithInstructions := lipgloss.JoinVertical(lipgloss.Left, menuView, instructions)
 
@@ -404,20 +387,16 @@ func (m model) View() string {
     } else {
         statusView = m.statusMessage
     }
-    
-    updateButton := buttonStyle.Render("Update")
+
     okButton := buttonStyle.Render("OK")
     cancelButton := buttonStyle.Render("Cancel")
-    switch m.activeButton {
-        case 0:
-            updateButton = activeButtonStyle.Render("Update")
-        case 1:
-            okButton = activeButtonStyle.Render("OK")
-        case 2:
-            cancelButton = activeButtonStyle.Render("Cancel")
+    if m.activeButton == 0 {
+        okButton = activeButtonStyle.Render("OK")
+    } else {
+        cancelButton = activeButtonStyle.Render("Cancel")
     }
 
-    buttons := lipgloss.JoinHorizontal(lipgloss.Center, updateButton, okButton, cancelButton)
+    buttons := lipgloss.JoinHorizontal(lipgloss.Center, okButton, cancelButton)
     centeredButtons := lipgloss.NewStyle().Width(100).Align(lipgloss.Center).Render(buttons)
     statusView = statusView + "\n\n" + centeredButtons
 
@@ -428,18 +407,20 @@ func (m model) View() string {
     )
 
     commonBorderStyle := lipgloss.NewStyle().
-    Border(lipgloss.RoundedBorder()).
-    BorderForeground(lipgloss.Color("#080563")).
-    Padding(0).
-    Bold(true)
+        Border(lipgloss.RoundedBorder()).
+        BorderForeground(lipgloss.Color("#080563")).
+        Padding(0).
+        Bold(true)
 
     return commonBorderStyle.Render(combinedView)
 }
 
+
 func main() {
 
-    if _, err := tea.NewProgram(newModel(), tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(newModel(), tea.WithAltScreen()).Run(); err != nil {
         fmt.Println("Error running program:", err)
         os.Exit(1)
     }
+
 }
